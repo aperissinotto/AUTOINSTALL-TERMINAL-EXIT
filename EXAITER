@@ -1,0 +1,413 @@
+*******************************************************************   @
+* NAME..............: EXAITER                                     *   @
+* TYPE..............: USER EXIT CICS                              *   @
+* LANGUAGE..........: ASSEMBLER                                   *   @
+* SUMMARY...........: PERFORMS TERMINAL AUTO-INSTALL ON CICS      *   @
+*******************************************************************   @
+         IEABRCX DEFINE
+EXAITER  DFHEIENT CODEREG=0,                                           X
+               STATREG=(R12),                                          X
+               DATAREG=(R13),                                          X
+               EIBREG=(R11),                                           X
+               STATIC=EXSTAT
+EXAITER  AMODE 31                                                 *   @
+EXAITER  RMODE ANY                                                *   @
+         OC    EIBCALEN,EIBCALEN    * COMMAREA RECEIVED?          *   @
+         JZ    L900000              * NO, END PROGRAM.            *   @
+*                                                                 *   @
+         L     R2,DFHEICAP          * YES, LOAD COMMAREA ADDRESS  *   @
+         USING INSTALL_EXIT_COMMAREA,R2 * BASE ON                 *   @
+*-----------------------------------------------------------------*   @
+*        FUNCTION VALIDATION                                      *   @
+*-----------------------------------------------------------------*   @
+         LLGC  R0,INSTALL_EXIT_FUNCTION * LOAD FUNCTION           *   @
+         CLIJE R0,INSTALL_CODE,L000100 * INSTALL?                 *   @
+         CLIJE R0,INSTALL_SHIPPED_TERM,L000280 * REMOTE INSTALL?  *   @
+         CLIJE R0,INSTALL_SHIPPED_RSE,L000300 * REMOTE INSTALL?   *   @
+         J     L900000              * NONE, INVALID FUNCTION      *   @
+*-----------------------------------------------------------------*   @
+*        X'F0' FUNCTION - TERMINAL INSTALL                        *   @
+*-----------------------------------------------------------------*   @
+L000100  DS   0H                                                  *   @
+         L     R3,INSTALL_MODELNAME_PTR * LOAD ADDRESS MODELS     *   @
+         USING MODELNAME_LIST,R3    * BASE ON                     *   @
+         OC    MODELNAME_COUNT,MODELNAME_COUNT * HAS MODELS?      *   @
+         JZ    L900000              * NO, END PROGRAM.            *   @
+         L     R4,INSTALL_SELECTED_PTR * SELECTION PARAMETERS     *   @
+         USING SELECTED_PARMS,R4    * BASE ON                     *   @
+*-----------------------------------------------------------------*   @
+*        TERMINAL MODEL SELECTION                                 *   @
+*-----------------------------------------------------------------*   @
+         LH    R5,MODELNAME_COUNT   * # OF MODELS                 *   @
+*                                                                 *   @
+L000120  DS   0H                                                  *   @
+         CLC   MODELNAME(8),=CL8'DFH3270' * DFH3270?              *   @
+         JE    L000140              * YES, GET OUT LOOPING        *   @
+*                                                                 *   @
+         LA    R3,8(,R3)            * GO TO THE NEXT ONE          *   @
+         JCT   R5,L000120           * TEST NEW MODEL              *   @
+*-----------------------------------------------------------------*   @
+*        IF NO HAVE I USE FIRST MODEL                             *   @
+*-----------------------------------------------------------------*   @
+         L     R3,INSTALL_MODELNAME_PTR * LOAD ADDRESS MODELS     *   @
+*                                                                 *   @
+L000140  DS   0H                                                  *   @
+         MVC   SELECTED_MODELNAME(8),MODELNAME * MOVE MODEL       *   @
+         DROP  R3                   * FREE REGISTER               *   @
+*-----------------------------------------------------------------*   @
+*        GET LAST TERMINAL USED                                   *   @
+*-----------------------------------------------------------------*   @
+         EXEC  CICS ASSIGN                                             X
+               APPLID(WUSRNM)                                          X
+               RESP(WRESP)                                             X
+               RESP2(WRESP2)
+*                                                                 *   @
+         MVC   WAPI,=CL16'ASSIGN-000000001' MOVE API CALLED       *   @
+         CLC   WRESP,DFHRESP(NORMAL) * ASSIGN OK?                 *   @
+         JNE   ME00001              * NO, ISSUES ERROR MESSAGE    *   @
+*                                                                 *   @
+         L     R15,X'10'            * CVT                         *   @
+         L     R15,X'220'(R15,0)    * CALLABLE SERVICE REQUEST TB *   @
+         L     R15,X'14'(R15,0)     * SERVICES                    *   @
+         L     R15,X'08'(R15,0)     * IEANTRT SERVICE             *   @
+*                                                                 *   @
+         MVC   WLEVEL,=A(IEANT_TASK_LEVEL)                        *   @
+         MVC   WUSRNM+8(8),LNMTKPR                                *   @
+         XC    WTKNNM,WTKNNM                                      *   @
+         MVC   WPERST,=A(IEANT_NOPERSIST)                         *   @
+         XC    WRETCOD,WRETCOD      * CLEAN                       *   @
+*                                   * CALL IEANTRT SERVICE        *   @
+         CALL  (R15),                                                  X
+               (WLEVEL,                                                X
+               WUSRNM,                                                 X
+               WTKNNM,                                                 X
+               WRETCOD),                                               X
+               VL,MF=(E,WPARM)
+*                                                                 *   @
+         MVC   WSRV,=C'IEANTRT '    * MOVE SERVICE CALLED         *   @
+         L     R15,WRETCOD          * LOAD RETURN CODE            *   @
+         CIJE  R15,0,L000160        * =0, TOKEN EXISTS            *   @
+         CIJNE R15,4,ME00002        * =4, TOKEN DOES NOT EXIST    *   @
+*                                   * GO CREATE THEN              *   @
+         MVHI  WFULL,1024           * GET 1K OF MEMORY            *   @
+*                                                                 *   @
+         EXEC  CICS GETMAIN SET(R2)                                    X
+               FLENGTH(WFULL)                                          X
+               INITIMG(LCLEAR)                                         X
+               SHARED                                                  X
+               NOSUSPEND                                               X
+               USERDATAKEY                                             X
+               RESP(WRESP)                                             X
+               RESP2(WRESP2)
+*                                                                 *   @
+         MVC   WAPI,=CL16'GETMAIN-00000001' * MOVE API CALLED     *   @
+         CLC   WRESP,DFHRESP(NORMAL) * GETMAIN OK?                *   @
+         JNE   ME00001              * NO, ISSUES ERROR MESSAGE    *   @
+         MVC   0(3,R2),LFSEED       * YES, SAVE FIRST SEED        *   @
+*                                                                 *   @
+         L     R15,X'10'            * CVT                         *   @
+         L     R15,X'220'(R15,0)    * CALLABLE SERVICE REQUEST TB *   @
+         L     R15,X'14'(R15,0)     * SERVICES                    *   @
+         L     R15,X'04'(R15,0)     * IEANTCR SERVICE             *   @
+*                                                                 *   @
+         MVC   WLEVEL,=A(IEANT_TASK_LEVEL)                        *   @
+         MVC   WUSRNM+8(8),LNMTKPR                                *   @
+         ST    R2,WTKNNM                                          *   @
+         MVC   WPERST,=A(IEANT_NOPERSIST)                         *   @
+         XC    WRETCOD,WRETCOD      * CLEAN                       *   @
+*                                   * CALL IEANTCR SERVICE        *   @
+         CALL  (R15),                                                  X
+               (WLEVEL,                                                X
+               WUSRNM,                                                 X
+               WTKNNM,                                                 X
+               WPERST,                                                 X
+               WRETCOD),                                               X
+               VL,MF=(E,WPARM)
+*                                                                 *   @
+         MVC   WSRV,=C'IEANTCR '    * MOVE CALLED SERVICE         *   @
+         L     R15,WRETCOD          * LOAD RETURN CODE            *   @
+         CIJNE R15,0,ME00002        * <>0, ERROR ON CALL          *   @
+*                                   * ISSUES ERROR MESSAGE        *   @
+L000160  DS   0H                                                  *   @
+         L     R2,WTKNNM            * LOAD TERM. AREA ADDRESS     *   @
+         MVC   WSEED(3),0(R2)       * MOVE LAST SEED              *   @
+         MVI   WTERMID,C'T'         * ALWAYS STARTS WITH T        *   @
+         LA    R9,3                 * THREE TIMES, TO AVOID LOOP  *   @
+*-----------------------------------------------------------------*   @
+*        GENERATE SEQUENTIAL ID                                   *   @
+*-----------------------------------------------------------------*   @
+L000180  DS   0H                                                  *   @
+         LA    R8,3                 * LENGTH OF ID                *   @
+         LA    R5,WTERMID+1         * NEW TERMID GENERATED        *   @
+         LA    R6,WSEED             * ADRESS SELECTOR ARRAY       *   @
+*                                                                 *   @
+L000200  DS   0H                                                  *   @
+         LA    R10,LALFANUM         * POINT OPTION ARRAY          *   @
+         XR    R7,R7                * CLEAN                       *   @
+         IC    R7,0(0,R6)           * GET SELECTOR BYTE           *   @
+         LA    R10,0(R7,R10)        * POINT TO SELECTED BYTE      *   @
+         MVC   0(1,R5),0(R10)       * MOVE SELECTED BYTE          *   @
+*                                                                 *   @
+         LA    R5,1(0,R5)           * POINT NEXT BYTE OF ID       *   @
+         LA    R6,1(0,R6)           * POINT NEXT SELECTOR BYTE    *   @
+         JCT   R8,L000200           * NEXT BYTE OF ID             *   @
+*-----------------------------------------------------------------*   @
+*        GENERATE NEXT SELECTOR ARRAY                             *   @
+*-----------------------------------------------------------------*   @
+         LA    R8,3                 * LENGTH OF ARRAY             *   @
+         LA    R6,WSEED+2           * GET LAST SELECTOR BYTE      *   @
+*                                                                 *   @
+L000220  DS   0H                                                  *   @
+         XR    R7,R7                * CLEAN                       *   @
+         IC    R7,0(0,R6)           * GET SELECTOR BYTE           *   @
+         CLFI  R7,LNUMMAX           * LESS THAN MAX.INDEX?        *   @
+         JL    L000240              * YES, ADD +1                 *   @
+         XR    R7,R7                * NO, ZERO IT                 *   @
+         STC   R7,0(0,R6)           * AND SAVE IT                 *   @
+         LAY   R6,-1(0,R6)          * POINT PREVIOUS BYTE         *   @
+         JCT   R8,L000220           * AND TRY INCREMENT           *   @
+*                                   * LAST AVAILABLE HAS REACHED  *   @
+         L     R2,WTKNNM            * TERM. AREA ADDRESS          *   @
+         MVC   0(3,R2),LFSEED       * RETURN TO BEGIN             *   @
+         J     L000160              * AND TRY AGAIN               *   @
+*                                                                 *   @
+L000240  DS   0H                                                  *   @
+         LA    R7,1(0,R7)           * ADD +1 TO BYTE              *   @
+         STC   R7,0(0,R6)           * SAVE                        *   @
+*-----------------------------------------------------------------*   @
+*        TEST IF TERMINAL ALREADY EXISTS                          *   @
+*-----------------------------------------------------------------*   @
+         EXEC  CICS INQUIRE                                            X
+               TERMINAL(WTERMID)                                       X
+               RESP(WRESP)                                             X
+               RESP2(WRESP2)
+*                                                                 *   @
+         CLC   WRESP,DFHRESP(NORMAL) * TERMINAL EXIST?            *   @
+         JNE   L000260              * NO, GO ON                   *   @
+         JCT   R9,L000180           * YES, GENERATE ANOTHER ID    *   @
+         L     R2,WTKNNM            * TERM. AREA ADDRESS          *   @
+         MVC   0(3,R2),WSEED        * UPDATE LAST USED            *   @
+         J     ME00003              * I COULD NOT GENERATE        *   @
+*                                                                 *   @
+L000260  DS   0H                                                  *   @
+         MVC   WAPI,=CL16'INQ-TERM-0000001' MOVE CALLED API       *   @
+         CLC   WRESP,DFHRESP(TERMIDERR) * TERMINAL EXIST?         *   @
+         JNE   ME00001              * NO, ISSUES ERROR MESSAGE    *   @
+*                                                                 *   @
+         L     R2,WTKNNM            * TERM. AREA ADDRESS          *   @
+         MVC   0(3,R2),WSEED        * UPDATE LAST USED            *   @
+         MVC   SELECTED_TERM_ID(4),WTERMID * MOVE TERM. GENERATED *   @
+         MVI   SELECTED_RETURN_CODE,RETURN_OK * MOVE OK           *   @
+         J     L900000              * END                         *   @
+*                                                                 *   @
+         DROP  R2,R4                * FREE REGS                   *   @
+*-----------------------------------------------------------------*   @
+*        X'F7' FUNCTION - REMOTE TERMINAL INSTALL                 *   @
+*-----------------------------------------------------------------*   @
+L000280  DS   0H                                                  *   @
+         USING INSTALL_SHIPPED_COMMAREA,R2 * BASE ON              *   @
+         L     R5,INSTALL_SHIPPED_SELECTED_PTR * PARMS ADDRESS    *   @
+         USING INSTALL_SHIPPED_SELECTED_PARMS,R5 * BASE ON        *   @
+*                                                                 *   @
+         L     R8,INSTALL_SHIPPED_TERMID_PTR * TERMID             *   @
+         MVC   SELECTED_SHIPPED_TERMID,0(R8) * MOVE THE SAME      *   @
+         MVI   SELECTED_SHIPPED_RETURN_CODE,RETURN_OK * INST. *       @
+         J     L900000              * END                         *   @
+*                                                                 *   @
+         DROP  R2,R5                * FREE REGS                   *   @
+*-----------------------------------------------------------------*   @
+*        X'F8' FUNCTION - REMOTE APPC INSTALL                     *   @
+*-----------------------------------------------------------------*   @
+L000300  DS   0H                                                  *   @
+         USING INSTALL_SHIPPED_COMMAREA,R2 * BASE ON              *   @
+         L     R5,INSTALL_SHIPPED_SELECTED_PTR * PARMS ADDRESS    *   @
+         USING INSTALL_SHIPPED_SELECTED_PARMS,R5 * BASE ON        *   @
+*                                                                 *   @
+         L     R8,INSTALL_SHIPPED_TERMID_PTR * TERMID             *   @
+         MVC   SELECTED_SHIPPED_TERMID,0(R8) * MOVE THE SAME      *   @
+         MVI   SELECTED_SHIPPED_RETURN_CODE,RETURN_OK * INST. *       @
+         J     L900000              * END                         *   @
+*                                                                 *   @
+         DROP  R2,R5                * FREE REGS                   *   @
+*-----------------------------------------------------------------*   @
+*        END OF THE PROGRAM                                       *   @
+*-----------------------------------------------------------------*   @
+L900000 DS     0H                                                 *   @
+         XR    R15,R15              * RC=0                        *   @
+         DFHEIRET RCREG=R15         * RETURN TO CICS              *   @
+*-----------------------------------------------------------------*   @
+*        ERROR MESSAGES                                           *   @
+*-----------------------------------------------------------------*   @
+*        GENERIC ERROR IN API CALL                                *   @
+*-----------------------------------------------------------------*   @
+ME00001  DS   0H                                                  *   @
+         XC    WMSG,WMSG            * CLEAN                       *   @
+         MVC   WMSG(L'MSG001E),MSG001E * MOVE MENSAGE             *   @
+*                                                                 *   @
+         MVC   ME001AP,WAPI         * MOVE CALLED API             *   @
+         MVC   ME001TR,EIBTRNID     * MOVE TRANSACTION            *   @
+*                                                                 *   @
+         L     R1,WRESP             * MOV. RC                     *   @
+         CVD   R1,WDOUBLE           * CONVERT TO DECIMAL          *   @
+         UNPK  ME001RC(8),WDOUBLE+4(4) * UNPACK                   *   @
+         OI    ME001RC+7,X'F0'      * TURN ON ZONE                *   @
+*                                                                 *   @
+         L     R1,WRESP2            * MOV. RC                     *   @
+         CVD   R1,WDOUBLE           * CONVERT TO DECIMAL          *   @
+         UNPK  ME001RS(8),WDOUBLE+4(4) * UNPACK                   *   @
+         OI    ME001RS+7,X'F0'      * TURN ON ZONE                *   @
+*                                                                 *   @
+         MVHHI WHALF,L'WMSG         * LENGTH OF MENSAGE           *   @
+*                                   * ISSUE ON TD LOG             *   @
+         EXEC  CICS                                                    X
+               WRITEQ TD                                               X
+               QUEUE(LTDQUEUE)                                         X
+               FROM(WMSG)                                              X
+               LENGTH(WHALF)                                           X
+               NOHANDLE
+*                                                                 *   @
+         J     L900000              * RETURN TO CICS              *   @
+*-----------------------------------------------------------------*   @
+*        GENERIC ERROR IN SERVICE CALL                            *   @
+*-----------------------------------------------------------------*   @
+ME00002  DS   0H                                                  *   @
+         XC    WMSG,WMSG            * CLEAN                       *   @
+         MVC   WMSG(L'MSG002E),MSG002E * MOVE MENSAGE             *   @
+*                                                                 *   @
+         MVC   ME002SR,WSRV         * MOVE CALLED SERVICE         *   @
+         MVC   ME002TR,EIBTRNID     * MOVE TRANSACTION            *   @
+*                                                                 *   @
+         L     R1,WRETCOD           * MOV. RC                     *   @
+         CVD   R1,WDOUBLE           * CONVERT TO DECIMAL          *   @
+         UNPK  ME002RC(8),WDOUBLE+4(4) * UNPACK                   *   @
+         OI    ME002RC+7,X'F0'      * TURN ON ZONE                *   @
+*                                                                 *   @
+         MVHHI WHALF,L'WMSG         * LENGTH OF MENSAGE           *   @
+*                                   * ISSUE ON TD LOG             *   @
+         EXEC  CICS                                                    X
+               WRITEQ TD                                               X
+               QUEUE(LTDQUEUE)                                         X
+               FROM(WMSG)                                              X
+               LENGTH(WHALF)                                           X
+               NOHANDLE
+*                                                                 *   @
+         J     L900000              * RETURN TO CICS              *   @
+*-----------------------------------------------------------------*   @
+*        ERROR IN GENERATION OF TERMINAL ID                       *   @
+*-----------------------------------------------------------------*   @
+ME00003  DS   0H                                                  *   @
+         XC    WMSG,WMSG            * CLEAN                       *   @
+         MVC   WMSG(L'MSG003E),MSG003E * MOVE MENSAGE             *   @
+*                                                                 *   @
+         MVC   ME003TR,EIBTRNID     * MOVE TRANSACTION            *   @
+*                                                                 *   @
+         MVHHI WHALF,L'WMSG         * LENGTH OF MESSAGE           *   @
+*                                   * ISSUE ON TD LOG             *   @
+         EXEC  CICS                                                    X
+               WRITEQ TD                                               X
+               QUEUE(LTDQUEUE)                                         X
+               FROM(WMSG)                                              X
+               LENGTH(WHALF)                                           X
+               NOHANDLE
+*                                                                 *   @
+         J     L900000              * RETURN TO CICS              *   @
+*-----------------------------------------------------------------*   @
+*        LITERAL AREA                                             *   @
+*-----------------------------------------------------------------*   @
+EXSTAT   DS   0D                                                  *   @
+         LTORG                                                    *   @
+         IEANTASM                                                 *   @
+LNMTKPR  DC    C'TERMINAL'                                        *   @
+LTDQUEUE DC    C'TREL'                                            *   @
+LFSEED   DC    XL3'000000'                                        *   @
+LCLEAR   DC    X'00'                                              *   @
+*                         1         2         3                   *   @
+*                123456789012345678901234567890123456789          *   @
+LALFANUM DC    C'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789$@#'         *   @
+LNUMMIN  EQU   0                                                  *   @
+LNUMMAX  EQU   38                                                 *   @
+*-----------------------------------------------------------------*   @
+*        ERROR MESSAGES AREA                                      *   @
+*-----------------------------------------------------------------*   @
+*                         1         2         3         4         5
+*                123456789012345678901234567890123456789012345678901234
+MSG001E  DC    C'XXXX.01E-RESP1=XXXXXXXX RESP2=XXXXXXXX ON XXXXXXXXXXXX-
+               XXXX'                                              *   @
+*              567890123456789012
+*                   6         7                                   *   @
+ME001TR  EQU   WMSG+0,4                                           *   @
+ME001RC  EQU   WMSG+15,8                                          *   @
+ME001RS  EQU   WMSG+30,8                                          *   @
+ME001AP  EQU   WMSG+42,16                                         *   @
+*                                                                 *   @
+*                         1         2         3         4         5
+*                123456789012345678901234567890123456789012345678901234
+MSG002E  DC    C'XXXX.02E-SERVICE CALL ERROR XXXXXXXX RC=XXXXXXXX'
+*              567890123456789012                                 *   @
+*                   6         7                                   *   @
+ME002TR  EQU   WMSG+0,4                                           *   @
+ME002SR  EQU   WMSG+28,8                                          *   @
+ME002RC  EQU   WMSG+40,8                                          *   @
+*                                                                 *   @
+*                         1         2         3         4         5
+*                123456789012345678901234567890123456789012345678901234
+MSG003E  DC    C'XXXX.03E-ERROR IN GENERATION OF TERMINAL ID'     *   @
+*              567890123456789012                                 *   @
+*                   6         7                                   *   @
+ME003TR  EQU   WMSG+0,4                                           *   @
+*                                                                 *   @
+*-----------------------------------------------------------------*   @
+*        DSECT'S                                                  *   @
+*-----------------------------------------------------------------*   @
+*        WORKING AREA                                             *   @
+*-----------------------------------------------------------------*   @
+         DFHEISTG                                                 *   @
+         ORG   DFHEIUSR                                           *   @
+WTERMID  DS    CL4                  * TERMID GENERATED            *   @
+WRESP    DS    F                    * RESPONSE CICS COMMANDS      *   @
+WRESP2   DS    F                    * RESPONSE CICS COMMANDS      *   @
+WAPI     DS    CL16                 * API CALLED                  *   @
+WSRV     DS    CL8                  * SERVICE CALLED              *   @
+WMSG     DS    CL72                 * WORK TO MESSAGE             *   @
+WSEED    DS    XL3                  * SEED                        *   @
+*                                                                 *   @
+WLEVEL   DS    F                    * TASK LEVEL                  *   @
+WUSRNM   DS    CL16                 * NAME FOR NAME/TOKEN PAIR    *   @
+WTKNNM   DS    XL16                 * TOKEN FOR NAME/TOKEN PAIR   *   @
+WPERST   DS    F                    * PERSIST OPTION              *   @
+WRETCOD  DS    F                    * RETURN CODE                 *   @
+WPARM    DS  13A                    * PARM LIST                   *   @
+*                                                                 *   @
+WHALF    DS    F                    * FULL DE WORK                *   @
+         DS    X                                                  *   @
+*                                                                 *   @
+WFULL    DS    F                    * FULL DE WORK                *   @
+         DS    X                                                  *   @
+*                                                                 *   @
+WDOUBLE  DS    FD                   * DOUBLE DE WORK              *   @
+         DS    X                                                  *   @
+         DFHEIEND                                                 *   @
+*-----------------------------------------------------------------*   @
+*        TERMINAL INFORMATIONS                                    *   @
+*-----------------------------------------------------------------*   @
+         COPY  DFHTCUDS                                           *   @
+*-----------------------------------------------------------------*   @
+*        REGS EQUATS                                              *   @
+*-----------------------------------------------------------------*   @
+R0       EQU   0                                                  *   @
+R1       EQU   1                                                  *   @
+R2       EQU   2                                                  *   @
+R3       EQU   3                                                  *   @
+R4       EQU   4                                                  *   @
+R5       EQU   5                                                  *   @
+R6       EQU   6                                                  *   @
+R7       EQU   7                                                  *   @
+R8       EQU   8                                                  *   @
+R9       EQU   9                                                  *   @
+R10      EQU   10                                                 *   @
+R11      EQU   11                                                 *   @
+R12      EQU   12                                                 *   @
+R13      EQU   13                                                 *   @
+R14      EQU   14                                                 *   @
+R15      EQU   15                                                 *   @
+         END   EXAITER                                            *   @
